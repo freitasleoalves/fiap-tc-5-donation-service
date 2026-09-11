@@ -1,0 +1,63 @@
+name: Self-Healing - Runbook Automation
+
+# Disparado via webhook do Datadog (Monitor -> Integração Webhook,
+# @webhook-github-selfheal-donation-service, ver
+# fiap-tc-5-terraform/datadog.tf) quando o alerta de taxa de erros 5xx ou
+# de latência entra em estado Alert/Triggered.
+#
+# Diferente da Fase 4 (onde esse workflow morava no repositório GitOps),
+# aqui cada microsserviço tem seu próprio repositório — então o self-heal
+# do donation-service mora aqui mesmo, e só reinicia ESTE serviço.
+#
+#   POST https://api.github.com/repos/freitasleoalves/fiap-tc-5-donation-service/dispatches
+#   Authorization: Bearer <GitHub PAT com escopo 'repo'>
+#   Accept: application/vnd.github+json
+#   {
+#     "event_type": "self-heal",
+#     "client_payload": { "service": "donation-service", "alert_title": "...", "alert_id": "..." }
+#   }
+
+on:
+  repository_dispatch:
+    types: [self-heal]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SERVICE_NAME: donation-service
+  NAMESPACE: donation
+
+jobs:
+  rollout-restart:
+    name: kubectl rollout restart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Self-Healing - rollout restart
+        run: |
+          echo "### Self-Healing acionado ###"
+          echo "Serviço: ${{ env.SERVICE_NAME }}"
+          echo "Namespace: ${{ env.NAMESPACE }}"
+          echo "Alerta: ${{ github.event.client_payload.alert_title || 'disparo manual' }}"
+          kubectl rollout restart deployment/${{ env.SERVICE_NAME }} \
+            -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/${{ env.SERVICE_NAME }} \
+            -n ${{ env.NAMESPACE }} --timeout=120s
+
+      - name: Evidência - pods após o restart
+        if: always()
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
