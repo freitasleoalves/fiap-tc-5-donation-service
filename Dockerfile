@@ -19,6 +19,7 @@ WORKDIR /root/
 
 COPY --from=builder /donation-service .
 
+
 EXPOSE 8082
 
 CMD ["./donation-service"]
